@@ -4,6 +4,7 @@ PuLP 라이브러리 기반 선형 계획법(Linear Programming) 솔버
 """
 
 import pulp
+import math
 import pandas as pd
 from typing import Dict, List, Optional
 from optimization_model import LandscapingOptimizationModel, ScenarioConstraints
@@ -95,15 +96,42 @@ class LandscapingOptimizationSolver:
             for i in range(len(plant_ids))
         ]) <= constraints.total_area, "Area_Constraint"
         
-        # 제약 3: 생태 다양성 제약 (각 수종별)
-        max_area_per_species = constraints.total_area * constraints.diversity_ratio
-        print(f"✓ 생태 다양성 제약 추가: 각 수종 ≤ {max_area_per_species:,.1f}m² ({constraints.diversity_ratio*100:.0f}%)")
-        
-        for i in range(len(plant_ids)):
-            self.prob += (
-                area_coeffs[i] * self.variables[plant_ids[i]] <= max_area_per_species,
-                f"Diversity_{plant_ids[i]}"
+        # 제약 3: 생태 다양성 제약
+        # 기존 방식: 각 수종 <= 전체 가능 면적 × diversity_ratio
+        # 수정 방식: 각 수종 <= 실제 사용 면적 × diversity_ratio
+        used_area_expr = pulp.lpSum([
+            area_coeffs[i] * self.variables[plant_ids[i]]
+            for i in range(len(plant_ids))
+        ])
+
+        min_required_species = math.ceil(1 / constraints.diversity_ratio)
+
+        if len(plant_ids) >= min_required_species:
+            print(
+                f"✓ 생태 다양성 제약 추가: 각 수종 ≤ 실제 사용 면적의 "
+                f"{constraints.diversity_ratio*100:.0f}%"
             )
+
+            for i in range(len(plant_ids)):
+                self.prob += (
+                    area_coeffs[i] * self.variables[plant_ids[i]]
+                    <= constraints.diversity_ratio * used_area_expr,
+                    f"Diversity_Relative_{plant_ids[i]}"
+                )
+
+        else:
+            # 후보 수종이 너무 적으면 기존 방식으로 완화
+            max_area_per_species = constraints.total_area * constraints.diversity_ratio
+            print(
+                f"⚠️ 후보 수종이 {len(plant_ids)}개뿐이라 상대 다양성 제약을 완화합니다. "
+                f"각 수종 ≤ 전체 면적의 {constraints.diversity_ratio*100:.0f}%"
+            )
+
+            for i in range(len(plant_ids)):
+                self.prob += (
+                    area_coeffs[i] * self.variables[plant_ids[i]] <= max_area_per_species,
+                    f"Diversity_Total_{plant_ids[i]}"
+                )
         
         # 제약 4: 최소 탄소 목표 (옵션)
         if constraints.target_co2 > 0:
